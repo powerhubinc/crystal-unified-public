@@ -27,7 +27,7 @@ Crystal doesn't just compress bytes. It recognizes structure:
 | Data Type | What Crystal Sees | Result |
 |-----------|-------------------|--------|
 | Log files | Repeating templates with variable fields | **6-11% of original size** |
-| DNA sequences | 4-letter alphabet (ACGT) | **4:1 base compression** |
+| DNA sequences | 4-letter alphabet (ACGT) | **4:1 base**, **0.001% with reference** |
 | Time series | Sequential numeric patterns | **Delta-encoded efficiency** |
 | Firmware | Binary with sparse changes | **Block-level random access** |
 
@@ -124,8 +124,13 @@ cuz search january-logs.cuz "OutOfMemoryError"
 Native 2-bit encoding for DNA. Process reference genomes and sequencing data.
 
 ```bash
+# Standard compression (4:1)
 cuz compress human_genome.fasta -t dna
-# 3.2 GB -> ~800 MB with full fidelity
+# 3.2 GB -> ~800 MB
+
+# Reference-based compression (extreme ratios)
+cuz dna-index hg38.fa hg38.cdni        # Build reference index (once)
+cuz dna-compress sample.fa -r hg38.cdni # 3.3 GB -> ~30 KB
 ```
 
 ### Firmware Updates
@@ -167,6 +172,9 @@ cuz compress sensor_readings.csv -t numeric
 | `delta <old> <new>` | Create binary patch |
 | `apply <base> <patch>` | Apply binary patch |
 | `firmware <file>` | Block-based compression |
+| `dna-index <ref>` | Build DNA reference index |
+| `dna-compress <file> -r <idx>` | Compress with reference |
+| `dna-decompress <file> -r <idx>` | Decompress with reference |
 
 ### Options
 

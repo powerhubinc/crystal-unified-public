@@ -17,6 +17,7 @@ use crystal_unified::{TRANSFORM_NONE, TRANSFORM_DNA_2BIT, TRANSFORM_NUMERIC_DELT
 use crystal_unified::{smart_detect, would_bloat};
 use crystal_unified::{SMALL_FILE_THRESHOLD, TINY_FILE_THRESHOLD};
 use crystal_unified::CrystalReaderV10;
+use crystal_unified::{ReferenceIndex, encode_dna_with_reference, decode_dna_with_reference};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -48,6 +49,11 @@ fn main() {
         eprintln!("  delta         <old> <new> -o <patch.cuzd>");
         eprintln!("  apply         <file> <patch.cuzd> [-o output]");
         eprintln!();
+        eprintln!("DNA reference compression:");
+        eprintln!("  dna-index     <reference.fa> <output.cdni>  Build reference index");
+        eprintln!("  dna-compress  <input.fa> -r <ref.cdni> [-o output]");
+        eprintln!("  dna-decompress <input.cdnr> -r <ref.cdni> [-o output]");
+        eprintln!();
         eprintln!("Transforms: none, dna, numeric, binary, nibble, struct");
         std::process::exit(1);
     }
@@ -67,6 +73,9 @@ fn main() {
         "patch" => patch_cmd(&args[2..]),
         "delta" => delta_cmd(&args[2..]),
         "apply" => apply_cmd(&args[2..]),
+        "dna-index" => dna_index_cmd(&args[2..]),
+        "dna-compress" => dna_compress_cmd(&args[2..]),
+        "dna-decompress" => dna_decompress_cmd(&args[2..]),
         _ => {
             eprintln!("Unknown command: {}", args[1]);
             std::process::exit(1);
@@ -1296,4 +1305,160 @@ fn format_size(bytes: u64) -> String {
     } else {
         format!("{} B", bytes)
     }
+}
+
+// ============================================================================
+// DNA Reference Compression Commands
+// ============================================================================
+
+fn dna_index_cmd(args: &[String]) {
+    if args.is_empty() {
+        eprintln!("Usage: cuz dna-index <reference.fa> [output.cdni]");
+        std::process::exit(1);
+    }
+
+    let input_path = &args[0];
+    let output_path = if args.len() > 1 {
+        args[1].clone()
+    } else {
+        format!("{}.cdni", input_path)
+    };
+
+    println!("Building reference index from {}...", input_path);
+    let start = Instant::now();
+
+    let data = fs::read(input_path).expect("Failed to read reference file");
+    let data_size = data.len();
+
+    let index = ReferenceIndex::build(&data);
+    let index_bytes = index.to_bytes();
+
+    fs::write(&output_path, &index_bytes).expect("Failed to write index");
+
+    let elapsed = start.elapsed();
+    let speed = data_size as f64 / 1_000_000.0 / elapsed.as_secs_f64();
+
+    println!("{} -> {} ({}, {:.1} MB/s)",
+        input_path,
+        output_path,
+        format_size(index_bytes.len() as u64),
+        speed
+    );
+}
+
+fn dna_compress_cmd(args: &[String]) {
+    if args.is_empty() {
+        eprintln!("Usage: cuz dna-compress <input.fa> -r <reference.cdni> [-o output]");
+        std::process::exit(1);
+    }
+
+    let input_path = &args[0];
+    let mut ref_path: Option<String> = None;
+    let mut output_path = format!("{}.cdnr", input_path);
+
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "-r" && i + 1 < args.len() {
+            ref_path = Some(args[i + 1].clone());
+            i += 2;
+        } else if args[i] == "-o" && i + 1 < args.len() {
+            output_path = args[i + 1].clone();
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
+    let ref_path = ref_path.unwrap_or_else(|| {
+        eprintln!("Error: Reference index required. Use -r <reference.cdni>");
+        std::process::exit(1);
+    });
+
+    println!("Loading reference index...");
+    let ref_data = fs::read(&ref_path).expect("Failed to read reference index");
+    let index = ReferenceIndex::load(&ref_data).expect("Failed to parse reference index");
+
+    println!("Compressing {}...", input_path);
+    let start = Instant::now();
+
+    let input_data = fs::read(input_path).expect("Failed to read input file");
+    let input_size = input_data.len();
+
+    let compressed = encode_dna_with_reference(&input_data, &index);
+
+    // Apply zstd on top for additional compression
+    let final_compressed = zstd::stream::encode_all(&compressed[..], 19).expect("zstd compression failed");
+
+    fs::write(&output_path, &final_compressed).expect("Failed to write output");
+
+    let elapsed = start.elapsed();
+    let ratio = final_compressed.len() as f64 / input_size as f64 * 100.0;
+    let speed = input_size as f64 / 1_000_000.0 / elapsed.as_secs_f64();
+
+    println!("{} -> {} ({:.4}%, {:.1} MB/s)",
+        input_path,
+        output_path,
+        ratio,
+        speed
+    );
+    println!("  Original: {}", format_size(input_size as u64));
+    println!("  Compressed: {}", format_size(final_compressed.len() as u64));
+}
+
+fn dna_decompress_cmd(args: &[String]) {
+    if args.is_empty() {
+        eprintln!("Usage: cuz dna-decompress <input.cdnr> -r <reference.cdni> [-o output]");
+        std::process::exit(1);
+    }
+
+    let input_path = &args[0];
+    let mut ref_path: Option<String> = None;
+    let mut output_path = input_path.trim_end_matches(".cdnr").to_string();
+    if output_path == *input_path {
+        output_path = format!("{}.fa", input_path);
+    }
+
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "-r" && i + 1 < args.len() {
+            ref_path = Some(args[i + 1].clone());
+            i += 2;
+        } else if args[i] == "-o" && i + 1 < args.len() {
+            output_path = args[i + 1].clone();
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
+    let ref_path = ref_path.unwrap_or_else(|| {
+        eprintln!("Error: Reference index required. Use -r <reference.cdni>");
+        std::process::exit(1);
+    });
+
+    println!("Loading reference index...");
+    let ref_data = fs::read(&ref_path).expect("Failed to read reference index");
+    let index = ReferenceIndex::load(&ref_data).expect("Failed to parse reference index");
+
+    println!("Decompressing {}...", input_path);
+    let start = Instant::now();
+
+    let compressed_data = fs::read(input_path).expect("Failed to read input file");
+
+    // Decompress zstd first
+    let ref_compressed = zstd::stream::decode_all(&compressed_data[..]).expect("zstd decompression failed");
+
+    let decompressed = decode_dna_with_reference(&ref_compressed, &index);
+
+    fs::write(&output_path, &decompressed).expect("Failed to write output");
+
+    let elapsed = start.elapsed();
+    let speed = decompressed.len() as f64 / 1_000_000.0 / elapsed.as_secs_f64();
+
+    println!("{} -> {} ({}, {:.1} MB/s)",
+        input_path,
+        output_path,
+        format_size(decompressed.len() as u64),
+        speed
+    );
 }

@@ -81,6 +81,8 @@ pub const TRANSFORM_STRUCTURED: u8 = 5;
 
 pub const TRANSFORM_DNA_FASTA: u8 = 6;
 
+pub const TRANSFORM_DNA_REFERENCE: u8 = 7;
+
 // ============================================================================
 // Detection Constants
 // ============================================================================
