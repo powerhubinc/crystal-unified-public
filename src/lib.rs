@@ -30,7 +30,9 @@ pub use decompress::{CrystalReaderV10, RawDecompressorV10, BlockRawReader};
 
 pub use api::{compress, decompress, compress_with_options, compress_parallel, compress_parallel_with_options, compress_streaming, compress_streaming_with_options};
 
-pub use constants::{TRANSFORM_NONE, TRANSFORM_DNA_2BIT, TRANSFORM_NUMERIC_DELTA, TRANSFORM_BINARY_DELTA, TRANSFORM_NIBBLE_SPLIT, TRANSFORM_STRUCTURED};
+pub use constants::{TRANSFORM_NONE, TRANSFORM_DNA_2BIT, TRANSFORM_NUMERIC_DELTA, TRANSFORM_BINARY_DELTA, TRANSFORM_NIBBLE_SPLIT, TRANSFORM_STRUCTURED, TRANSFORM_DNA_REFERENCE};
+
+pub use transforms::{ReferenceIndex, encode_dna_with_reference, decode_dna_with_reference};
 
 pub use constants::{
     DETECT_THRESHOLD, SIGNAL_FREQUENCY, DEFAULT_DEPTH, MIN_DEPTH, MAX_DEPTH,
