@@ -1,0 +1,37 @@
+[package]
+name = "crystal-unified"
+version = "1.0.0"
+edition = "2021"
+description = "Crystal Unified (.cuz): High-performance compression for logs, firmware, genomic data, and more"
+license = "BSL-1.1"
+authors = ["Dane", "Powerhub Inc"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Serialization
+byteorder = "1.5"
+
+# Compression
+zstd = "0.13"
+
+# Performance
+rayon = "1.10"
+memchr = "2.7"
+memmap2 = "0.9"
+
+# Error handling
+thiserror = "1.0"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+
+[[bin]]
+name = "cuz"
+path = "src/bin/main.rs"

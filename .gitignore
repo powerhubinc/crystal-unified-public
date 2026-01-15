@@ -1,0 +1,32 @@
+# Build artifacts
+/target/
+
+# Temporary files
+*.log
+profile.json.gz
+test_output.txt
+
+# Benchmark UI
+benchmark-ui/node_modules/
+benchmark-ui/output/*
+benchmark-ui/uploads/*
+!benchmark-ui/output/.gitkeep
+!benchmark-ui/uploads/.gitkeep
+
+# IDE/Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config
+.claude/
+tmpclaude-*
+
+# Benchmark output (script is tracked)
+/benchmarks/output/
