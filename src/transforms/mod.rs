@@ -8,6 +8,7 @@
 
 mod dna_2bit;
 mod dna_fasta;
+mod dna_reference;
 mod numeric_delta;
 mod binary_delta;
 mod nibble_split;
@@ -19,6 +20,7 @@ pub use dna_2bit::{
     codon_index, compute_dna_mod3_score, would_benefit_mod3 as dna_would_benefit_mod3,
 };
 pub use dna_fasta::{encode_dna_fasta, decode_dna_fasta};
+pub use dna_reference::{ReferenceIndex, encode_dna_with_reference, decode_dna_with_reference};
 pub use numeric_delta::{encode_numeric_delta, decode_numeric_delta};
 pub use binary_delta::{encode_binary_delta, decode_binary_delta};
 pub use nibble_split::{encode_nibble_split, decode_nibble_split, would_benefit as nibble_would_benefit};
