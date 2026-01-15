@@ -12,9 +12,9 @@
 use std::collections::HashMap;
 
 const DNA_REF_MAGIC: &[u8; 4] = b"CDNR";
-const DNA_REF_VERSION: u8 = 3; // Version 3: adds lowercase support for true lossless
+const DNA_REF_VERSION: u8 = 4; // Version 4: adds FASTA format preservation (headers + line width)
 const INDEX_MAGIC: &[u8; 4] = b"CDNI";
-const INDEX_VERSION: u8 = 3; // Version 3: adds lowercase support
+const INDEX_VERSION: u8 = 3; // Version 3: adds lowercase support (index doesn't need FASTA format)
 
 // K-mer size for indexing (21-mers are common for uniqueness in human genome)
 const KMER_SIZE: usize = 21;
@@ -288,10 +288,10 @@ enum Segment {
 
 /// Encode DNA data using a reference genome
 pub fn encode_dna_with_reference(data: &[u8], index: &ReferenceIndex) -> Vec<u8> {
-    let (sequence, sample_n_runs, sample_lowercase_runs) = extract_sequence_full(data);
+    let (sequence, sample_n_runs, sample_lowercase_runs, metadata) = extract_sequence_full_with_meta(data);
 
     if sequence.is_empty() {
-        return create_empty_output(index.reference_hash);
+        return create_empty_output(index.reference_hash, &metadata);
     }
 
     let mut segments: Vec<Segment> = Vec::new();
@@ -353,8 +353,8 @@ pub fn encode_dna_with_reference(data: &[u8], index: &ReferenceIndex) -> Vec<u8>
         segments.push(Segment::Insert { data: pending_insert });
     }
 
-    // Serialize output with N-position and lowercase data
-    serialize_segments(&segments, index.reference_hash, sequence.len(), &sample_n_runs, &sample_lowercase_runs)
+    // Serialize output with N-position, lowercase, and FASTA metadata
+    serialize_segments(&segments, index.reference_hash, sequence.len(), &sample_n_runs, &sample_lowercase_runs, &metadata)
 }
 
 /// Decode DNA data using a reference genome
@@ -387,7 +387,7 @@ pub fn decode_dna_with_reference(data: &[u8], index: &ReferenceIndex) -> Vec<u8>
     let segment_count = u64::from_le_bytes(data[pos..pos+8].try_into().unwrap()) as usize;
     pos += 8;
 
-    let mut output = Vec::with_capacity(original_len);
+    let mut sequence = Vec::with_capacity(original_len);
 
     for _ in 0..segment_count {
         if pos >= data.len() {
@@ -408,7 +408,7 @@ pub fn decode_dna_with_reference(data: &[u8], index: &ReferenceIndex) -> Vec<u8>
                 let length = u32::from_le_bytes(data[pos..pos+4].try_into().unwrap()) as usize;
                 pos += 4;
 
-                output.extend(index.get_ref_slice_raw(ref_pos, length));
+                sequence.extend(index.get_ref_slice_raw(ref_pos, length));
             }
             1 => {
                 // Insert segment (2-bit encoded)
@@ -434,7 +434,7 @@ pub fn decode_dna_with_reference(data: &[u8], index: &ReferenceIndex) -> Vec<u8>
                         0b11 => b'T',
                         _ => b'N',
                     };
-                    output.push(base);
+                    sequence.push(base);
                 }
                 pos += packed_len;
             }
@@ -448,9 +448,9 @@ pub fn decode_dna_with_reference(data: &[u8], index: &ReferenceIndex) -> Vec<u8>
             for &(start, length) in &n_runs {
                 let start_idx = start as usize;
                 let end_idx = (start + length as u64) as usize;
-                if start_idx < output.len() {
-                    let end = end_idx.min(output.len());
-                    output[start_idx..end].fill(b'N');
+                if start_idx < sequence.len() {
+                    let end = end_idx.min(sequence.len());
+                    sequence[start_idx..end].fill(b'N');
                 }
             }
         }
@@ -462,13 +462,125 @@ pub fn decode_dna_with_reference(data: &[u8], index: &ReferenceIndex) -> Vec<u8>
             for &(start, length) in &lowercase_runs {
                 let start_idx = start as usize;
                 let end_idx = (start + length as u64) as usize;
-                if start_idx < output.len() {
-                    let end = end_idx.min(output.len());
-                    for byte in &mut output[start_idx..end] {
+                if start_idx < sequence.len() {
+                    let end = end_idx.min(sequence.len());
+                    for byte in &mut sequence[start_idx..end] {
                         *byte = byte.to_ascii_lowercase();
                     }
                 }
             }
+        }
+    }
+
+    // Read FASTA metadata (version 4+)
+    let metadata = if version >= 4 && pos < data.len() {
+        read_fasta_metadata(data, &mut pos)
+    } else {
+        None
+    };
+
+    // Format output as FASTA if we have metadata
+    if let Some(meta) = metadata {
+        format_as_fasta(&sequence, &meta)
+    } else {
+        // Legacy: return raw sequence
+        sequence
+    }
+}
+
+/// Read FASTA metadata from compressed data
+fn read_fasta_metadata(data: &[u8], pos: &mut usize) -> Option<FastaMetadata> {
+    if *pos + 3 > data.len() {
+        return None;
+    }
+
+    // Read line width and flags
+    let line_width = data[*pos];
+    *pos += 1;
+    let uses_crlf = data[*pos] != 0;
+    *pos += 1;
+
+    // Read header count
+    if *pos + 8 > data.len() {
+        return None;
+    }
+    let header_count = u64::from_le_bytes(data[*pos..*pos+8].try_into().ok()?) as usize;
+    *pos += 8;
+
+    let mut headers = Vec::with_capacity(header_count);
+    for _ in 0..header_count {
+        // Read sequence position
+        if *pos + 8 > data.len() {
+            return None;
+        }
+        let seq_pos = u64::from_le_bytes(data[*pos..*pos+8].try_into().ok()?);
+        *pos += 8;
+
+        // Read header string length
+        if *pos + 4 > data.len() {
+            return None;
+        }
+        let header_len = u32::from_le_bytes(data[*pos..*pos+4].try_into().ok()?) as usize;
+        *pos += 4;
+
+        // Read header string
+        if *pos + header_len > data.len() {
+            return None;
+        }
+        let header = String::from_utf8_lossy(&data[*pos..*pos+header_len]).to_string();
+        *pos += header_len;
+
+        headers.push((header, seq_pos));
+    }
+
+    Some(FastaMetadata {
+        headers,
+        line_width,
+        uses_crlf,
+    })
+}
+
+/// Format sequence as proper FASTA with headers and line wrapping
+fn format_as_fasta(sequence: &[u8], meta: &FastaMetadata) -> Vec<u8> {
+    let line_ending: &[u8] = if meta.uses_crlf { b"\r\n" } else { b"\n" };
+    let line_width = meta.line_width as usize;
+
+    // Estimate output size: sequence + headers + newlines
+    let num_newlines = (sequence.len() + line_width - 1) / line_width;
+    let header_bytes: usize = meta.headers.iter().map(|(h, _)| h.len() + 2).sum(); // +2 for > and newline
+    let estimated_size = sequence.len() + num_newlines * line_ending.len() + header_bytes;
+
+    let mut output = Vec::with_capacity(estimated_size);
+
+    // Sort headers by sequence position
+    let mut sorted_headers: Vec<_> = meta.headers.iter().collect();
+    sorted_headers.sort_by_key(|(_, pos)| *pos);
+
+    let mut seq_pos: usize = 0;
+    let mut header_idx = 0;
+
+    while seq_pos < sequence.len() {
+        // Check if we need to write a header at this position
+        while header_idx < sorted_headers.len() && sorted_headers[header_idx].1 == seq_pos as u64 {
+            output.push(b'>');
+            output.extend_from_slice(sorted_headers[header_idx].0.as_bytes());
+            output.extend_from_slice(line_ending);
+            header_idx += 1;
+        }
+
+        // Determine where this chromosome ends (next header position or end of sequence)
+        let chrom_end = if header_idx < sorted_headers.len() {
+            (sorted_headers[header_idx].1 as usize).min(sequence.len())
+        } else {
+            sequence.len()
+        };
+
+        // Write sequence with line wrapping until next header or end
+        while seq_pos < chrom_end {
+            let line_end = (seq_pos + line_width).min(chrom_end);
+            output.extend_from_slice(&sequence[seq_pos..line_end]);
+            output.extend_from_slice(line_ending);
+            seq_pos = line_end;
         }
     }
 
@@ -529,27 +641,62 @@ fn write_runs(output: &mut Vec<u8>, runs: &Runs) {
     }
 }
 
-/// Extract sequence with N positions and lowercase positions from FASTA data
-fn extract_sequence_full(data: &[u8]) -> (Vec<u8>, Runs, Runs) {
+/// FASTA file metadata for lossless reconstruction
+#[derive(Debug, Clone)]
+struct FastaMetadata {
+    /// Headers with (header_text, sequence_start_position)
+    headers: Vec<(String, u64)>,
+    /// Line width (chars per line, typically 80)
+    line_width: u8,
+    /// Whether file uses CRLF (Windows) or LF (Unix) line endings
+    uses_crlf: bool,
+}
+
+/// Extract sequence with N positions, lowercase positions, and FASTA metadata
+fn extract_sequence_full_with_meta(data: &[u8]) -> (Vec<u8>, Runs, Runs, FastaMetadata) {
     let mut sequence = Vec::with_capacity(data.len());
     let mut n_runs: Runs = Vec::new();
     let mut lowercase_runs: Runs = Vec::new();
+    let mut headers: Vec<(String, u64)> = Vec::new();
     let mut in_header = false;
+    let mut current_header = String::new();
     let mut current_n_start: Option<u64> = None;
     let mut current_lc_start: Option<u64> = None;
     let mut current_pos: u64 = 0;
+    let mut detected_line_width: Option<u8> = None;
+    let mut current_line_len: usize = 0;
+    let mut uses_crlf = false;
+    let mut prev_byte: u8 = 0;
 
     for &byte in data {
-        // Skip FASTA header lines (starting with '>')
+        // Detect CRLF
+        if byte == b'\n' && prev_byte == b'\r' {
+            uses_crlf = true;
+        }
+        prev_byte = byte;
+
+        // Handle FASTA header lines (starting with '>')
         if byte == b'>' {
             in_header = true;
+            current_header.clear();
             continue;
         }
-        if byte == b'\n' {
-            in_header = false;
+        if byte == b'\n' || byte == b'\r' {
+            if in_header {
+                // Store header with its sequence start position
+                headers.push((current_header.clone(), current_pos));
+                in_header = false;
+            } else if byte == b'\n' && current_line_len > 0 {
+                // Detect line width from first sequence line
+                if detected_line_width.is_none() && current_line_len <= 255 {
+                    detected_line_width = Some(current_line_len as u8);
+                }
+                current_line_len = 0;
+            }
             continue;
         }
         if in_header {
+            current_header.push(byte as char);
             continue;
         }
 
@@ -576,6 +723,7 @@ fn extract_sequence_full(data: &[u8]) -> (Vec<u8>, Runs, Runs) {
 
                 sequence.push(upper_byte);
                 current_pos += 1;
+                current_line_len += 1;
             }
             b'N' => {
                 // Start or continue N run
@@ -595,6 +743,7 @@ fn extract_sequence_full(data: &[u8]) -> (Vec<u8>, Runs, Runs) {
 
                 sequence.push(b'N');
                 current_pos += 1;
+                current_line_len += 1;
             }
             _ => {} // Skip other characters
         }
@@ -608,7 +757,19 @@ fn extract_sequence_full(data: &[u8]) -> (Vec<u8>, Runs, Runs) {
         lowercase_runs.push((start, (current_pos - start) as u32));
     }
 
-    (sequence, n_runs, lowercase_runs)
+    let metadata = FastaMetadata {
+        headers,
+        line_width: detected_line_width.unwrap_or(80),
+        uses_crlf,
+    };
+
+    (sequence, n_runs, lowercase_runs, metadata)
+}
+
+/// Extract sequence with N positions and lowercase positions from FASTA data
+fn extract_sequence_full(data: &[u8]) -> (Vec<u8>, Runs, Runs) {
+    let (seq, n_runs, lc_runs, _) = extract_sequence_full_with_meta(data);
+    (seq, n_runs, lc_runs)
 }
 
 fn extract_sequence(data: &[u8]) -> Vec<u8> {
@@ -706,8 +867,8 @@ fn extend_match(sequence: &[u8], seq_pos: usize, index: &ReferenceIndex, ref_pos
     length
 }
 
-fn create_empty_output(ref_hash: u64) -> Vec<u8> {
-    let mut output = Vec::with_capacity(45);
+fn create_empty_output(ref_hash: u64, metadata: &FastaMetadata) -> Vec<u8> {
+    let mut output = Vec::with_capacity(64);
     output.extend_from_slice(DNA_REF_MAGIC);
     output.push(DNA_REF_VERSION);
     output.extend_from_slice(&ref_hash.to_le_bytes());
@@ -715,10 +876,11 @@ fn create_empty_output(ref_hash: u64) -> Vec<u8> {
     output.extend_from_slice(&0u64.to_le_bytes()); // segment count
     output.extend_from_slice(&0u64.to_le_bytes()); // n_run count
     output.extend_from_slice(&0u64.to_le_bytes()); // lowercase_run count
+    write_fasta_metadata(&mut output, metadata);
     output
 }
 
-fn serialize_segments(segments: &[Segment], ref_hash: u64, original_len: usize, n_runs: &Runs, lowercase_runs: &Runs) -> Vec<u8> {
+fn serialize_segments(segments: &[Segment], ref_hash: u64, original_len: usize, n_runs: &Runs, lowercase_runs: &Runs, metadata: &FastaMetadata) -> Vec<u8> {
     let mut output = Vec::new();
 
     // Header
@@ -752,7 +914,27 @@ fn serialize_segments(segments: &[Segment], ref_hash: u64, original_len: usize, 
     // Lowercase runs (version 3+)
     write_runs(&mut output, lowercase_runs);
 
+    // FASTA metadata (version 4+)
+    write_fasta_metadata(&mut output, metadata);
+
     output
+}
+
+/// Write FASTA metadata to output
+fn write_fasta_metadata(output: &mut Vec<u8>, metadata: &FastaMetadata) {
+    // Line width (1 byte) and CRLF flag (1 byte)
+    output.push(metadata.line_width);
+    output.push(if metadata.uses_crlf { 1 } else { 0 });
+
+    // Header count
+    output.extend_from_slice(&(metadata.headers.len() as u64).to_le_bytes());
+
+    // Headers
+    for (header, seq_pos) in &metadata.headers {
+        output.extend_from_slice(&seq_pos.to_le_bytes());
+        output.extend_from_slice(&(header.len() as u32).to_le_bytes());
+        output.extend_from_slice(header.as_bytes());
+    }
 }
 
 #[cfg(test)]
@@ -813,11 +995,13 @@ mod tests {
         let reference = b">ref\nACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT\n";
         let index = ReferenceIndex::build(reference);
 
-        let sample = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT";
+        // Sample with FASTA format
+        let sample = b">sample\nACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT\n";
         let encoded = encode_dna_with_reference(sample, &index);
         let decoded = decode_dna_with_reference(&encoded, &index);
 
-        assert_eq!(decoded, extract_sequence(sample));
+        // v4 should return exact original FASTA format
+        assert_eq!(decoded, sample.to_vec());
     }
 
     #[test]
@@ -830,14 +1014,14 @@ mod tests {
         let encoded = encode_dna_with_reference(sample, &index);
         let decoded = decode_dna_with_reference(&encoded, &index);
 
-        let expected = extract_sequence(sample);
-        assert_eq!(decoded, expected);
+        // v4 should return exact original FASTA format
+        assert_eq!(decoded, sample.to_vec());
 
-        // Verify N bases are preserved
-        assert_eq!(decoded[4], b'N');
-        assert_eq!(decoded[5], b'N');
-        assert_eq!(decoded[6], b'N');
-        assert_eq!(decoded[7], b'N');
+        // Verify N bases are preserved (skip header ">sample\n" = 8 bytes)
+        assert_eq!(decoded[8 + 4], b'N');
+        assert_eq!(decoded[8 + 5], b'N');
+        assert_eq!(decoded[8 + 6], b'N');
+        assert_eq!(decoded[8 + 7], b'N');
     }
 
     #[test]
@@ -850,12 +1034,15 @@ mod tests {
         let encoded = encode_dna_with_reference(sample, &index);
         let decoded = decode_dna_with_reference(&encoded, &index);
 
-        // Verify lowercase bases are preserved
-        assert_eq!(decoded[0], b'a');
-        assert_eq!(decoded[1], b'c');
-        assert_eq!(decoded[2], b'g');
-        assert_eq!(decoded[3], b't');
-        assert_eq!(decoded[4], b'A'); // Uppercase continues
+        // v4 should return exact original FASTA format
+        assert_eq!(decoded, sample.to_vec());
+
+        // Verify lowercase bases are preserved (skip header ">sample\n" = 8 bytes)
+        assert_eq!(decoded[8], b'a');
+        assert_eq!(decoded[9], b'c');
+        assert_eq!(decoded[10], b'g');
+        assert_eq!(decoded[11], b't');
+        assert_eq!(decoded[12], b'A'); // Uppercase continues
     }
 
     #[test]
