@@ -1,13 +1,13 @@
 # Crystal Unified Benchmark Results
 
 **Date:** 2026-01-13 14:00:08
-**System:** DANE-PC001
 **CPU:** Intel(R) Core(TM) i9-9900X CPU @ 3.50GHz
 
 ## Summary
 
 | File | Original | Auto | Fast | Level 6 | Parallel |
-|------|----------|------|------|---------|----------|| openstack_abnormal.log | 5.18 MB | 10.2% | 8.2% | 9.1% | 8.2% |
+|------|----------|------|------|---------|----------|
+| openstack_abnormal.log | 5.18 MB | 10.2% | 8.2% | 9.1% | 8.2% |
 | openstack_normal1.log | 14.78 MB | 10.0% | 8.1% | 8.9% | 8.1% |
 | Mac.log | 16.10 MB | 6.2% | 7.1% | 6.6% | 7.1% |
 | HealthApp.log | 22.44 MB | 11.6% | 9.9% | 10.5% | 9.9% |
@@ -20,7 +20,8 @@
 ## Compression Speed (MB/s)
 
 | File | Auto | Fast | Level 6 | Parallel |
-|------|------|------|---------|----------|| openstack_abnormal.log | 103.8 | 105.5 | 86.1 | 157.4 |
+|------|------|------|---------|----------|
+| openstack_abnormal.log | 103.8 | 105.5 | 86.1 | 157.4 |
 | openstack_normal1.log | 137.0 | 112.3 | 107.4 | 233.7 |
 | Mac.log | 158.0 | 114.0 | 101.4 | 253.3 |
 | HealthApp.log | 135.2 | 119.0 | 108.1 | 273.7 |
@@ -33,7 +34,8 @@
 ## Decompression Speed (MB/s)
 
 | File | Auto | Fast | Level 6 | Parallel |
-|------|------|------|---------|----------|| openstack_abnormal.log | 149.2 | 264.3 | 277.2 | 284.8 |
+|------|------|------|---------|----------|
+| openstack_abnormal.log | 149.2 | 264.3 | 277.2 | 284.8 |
 | openstack_normal1.log | 179.8 | 607.9 | 579.7 | 580.2 |
 | Mac.log | 649.5 | 657.9 | 611.1 | 683.8 |
 | HealthApp.log | 150.3 | 696.1 | 695.9 | 759.0 |
