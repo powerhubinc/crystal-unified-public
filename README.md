@@ -172,7 +172,7 @@ cuz compress sensor_readings.csv -t numeric
 
 | Option | Description |
 |--------|-------------|
-| `-l <1-9>` | Compression level (1=fast, 9=best) |
+| `-l <1-22>` | Compression level (1=fast, 22=best) |
 | `-t <type>` | Transform: `dna`, `numeric`, `binary`, `nibble`, `struct` |
 | `-j` | Parallel compression (uses all cores) |
 | `-s` | Streaming mode (constant memory) |
