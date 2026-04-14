@@ -20,6 +20,10 @@ use crate::hash::{
     trigram_bloom_empty, trigram_query_pattern, trigram_might_contain,
 };
 use crate::encoding::{contains_bytes, group_varint_decode, read_varint_fast};
+use crate::sketch::{
+    QuantizedVector, VectorQuantizer, SimilarityMatch,
+    jl_sketch_from_embedding,
+};
 use super::helpers::{decompress_no_dict, decompress_with_ddict};
 
 struct TemplateV10<'a> {
@@ -40,10 +44,15 @@ pub struct CrystalReaderV10<'a> {
     index_offset: usize,
     bloom_offset: usize,
     trigram_offset: usize,
+    sketch_offset: usize,
     data_offset: usize,
     ddict: Option<DDict<'static>>,
     fast_mode: bool,
     streaming_mode: bool,
+    has_jl_sketch: bool,
+    sketch_dim: usize,
+    sketch_bits: u8,
+    sketch_entry_size: usize,
 }
 
 impl<'a> CrystalReaderV10<'a> {
@@ -78,18 +87,43 @@ impl<'a> CrystalReaderV10<'a> {
         let has_trigrams = (flags & FLAG_HAS_TRIGRAMS) != 0;
         let fast_mode = (flags & FLAG_FAST_MODE) != 0;
         let streaming_mode = (flags & FLAG_STREAMING_MODE) != 0;
+        let has_jl_sketch = (flags & FLAG_HAS_JL_SKETCH) != 0;
+
+        let (sketch_dim, sketch_bits, idf_section_size) = if has_jl_sketch {
+            let dim = data[HEADER_SKETCH_DIM_OFFSET] as usize;
+            let bits = data[HEADER_SKETCH_BITS_OFFSET];
+            let dim = if dim == 0 { JL_SKETCH_DEFAULT_DIM } else { dim as usize };
+            let bits = if bits == 0 { JL_SKETCH_QUANT_BITS } else { bits };
+            let idf_size = if HEADER_IDF_SIZE_OFFSET + 4 <= HEADER_SIZE {
+                u32::from_le_bytes(
+                    data[HEADER_IDF_SIZE_OFFSET..HEADER_IDF_SIZE_OFFSET + 4]
+                        .try_into()
+                        .unwrap_or([0; 4]),
+                ) as usize
+            } else {
+                0
+            };
+            (dim, bits, idf_size)
+        } else {
+            (JL_SKETCH_DEFAULT_DIM, JL_SKETCH_QUANT_BITS, 0)
+        };
+        let sketch_entry_size = jl_sketch_entry_size(sketch_dim, sketch_bits);
 
         let dict_offset = HEADER_SIZE;
         let index_offset = dict_offset + dict_size;
         let bloom_offset = index_offset + (block_count as usize * BLOCK_INDEX_ENTRY_SIZE);
         let trigram_offset = bloom_offset + (block_count as usize * BLOOM_SIZE_BYTES);
-        let data_offset = if has_trigrams {
+        let sketch_offset = if has_trigrams {
             trigram_offset + (block_count as usize * TRIGRAM_BLOOM_SIZE_BYTES)
         } else {
             trigram_offset
         };
+        let data_offset = if has_jl_sketch {
+            sketch_offset + (block_count as usize * sketch_entry_size) + idf_section_size
+        } else {
+            sketch_offset
+        };
 
-       
         let ddict = if has_dictionary && dict_size > 0 {
             let compressed_dict = &data[dict_offset..dict_offset + dict_size];
             if let Ok(raw_dict) = zstd::stream::decode_all(compressed_dict) {
@@ -114,10 +148,15 @@ impl<'a> CrystalReaderV10<'a> {
             index_offset,
             bloom_offset,
             trigram_offset,
+            sketch_offset,
             data_offset,
             ddict,
             fast_mode,
             streaming_mode,
+            has_jl_sketch,
+            sketch_dim,
+            sketch_bits,
+            sketch_entry_size,
         })
     }
 
@@ -131,6 +170,7 @@ impl<'a> CrystalReaderV10<'a> {
     pub fn compression_level(&self) -> i32 { self.compression_level }
     pub fn is_streaming_mode(&self) -> bool { self.streaming_mode }
     pub fn flags(&self) -> u64 { self.flags }
+    pub fn has_jl_sketch(&self) -> bool { self.has_jl_sketch }
 
     pub fn get_raw_block(&self, block_idx: u64) -> Option<(&[u8], usize)> {
         if block_idx >= self.block_count {
@@ -730,6 +770,140 @@ impl<'a> CrystalReaderV10<'a> {
         }
 
         Ok(output)
+    }
+
+    // ========================================================================
+    // JL Sketch / Vector Similarity Search
+    // ========================================================================
+
+    pub fn sketch_dim(&self) -> usize { self.sketch_dim }
+    pub fn sketch_bits(&self) -> u8 { self.sketch_bits }
+
+    pub fn get_block_sketch(&self, block_idx: u64) -> Option<QuantizedVector> {
+        if !self.has_jl_sketch || block_idx >= self.block_count {
+            return None;
+        }
+        let pos = self.sketch_offset + (block_idx as usize * self.sketch_entry_size);
+        if pos + self.sketch_entry_size > self.data.len() {
+            return None;
+        }
+        QuantizedVector::from_bytes_with_dim(
+            &self.data[pos..pos + self.sketch_entry_size],
+            self.sketch_bits,
+            self.sketch_dim,
+        )
+    }
+
+    fn make_query_sketch(&self, embedding: &[f32]) -> Option<(VectorQuantizer, QuantizedVector)> {
+        if embedding.is_empty() {
+            return None;
+        }
+        let sketch = jl_sketch_from_embedding(embedding, self.sketch_dim);
+        let norm: f32 = sketch.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm < 1e-10 {
+            return None;
+        }
+        let quantizer = VectorQuantizer::with_dim(self.sketch_bits, self.sketch_dim);
+        let query_qv = quantizer.encode(&sketch);
+        Some((quantizer, query_qv))
+    }
+
+    pub fn search_similar(&self, query: &[f32], threshold: f32) -> Vec<SimilarityMatch> {
+        if !self.has_jl_sketch || self.block_count == 0 {
+            return Vec::new();
+        }
+
+        let (quantizer, query_qv) = match self.make_query_sketch(query) {
+            Some(v) => v,
+            None => return Vec::new(),
+        };
+
+        let mut matches: Vec<SimilarityMatch> = if self.block_count > 100 {
+            (0..self.block_count)
+                .into_par_iter()
+                .filter_map(|block_idx| {
+                    let block_qv = self.get_block_sketch(block_idx)?;
+                    let score = quantizer.quantized_cosine_similarity(&query_qv, &block_qv);
+                    if score >= threshold {
+                        Some(SimilarityMatch { block_idx, score })
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            (0..self.block_count)
+                .filter_map(|block_idx| {
+                    let block_qv = self.get_block_sketch(block_idx)?;
+                    let score = quantizer.quantized_cosine_similarity(&query_qv, &block_qv);
+                    if score >= threshold {
+                        Some(SimilarityMatch { block_idx, score })
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        matches.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        matches
+    }
+
+    pub fn search_similar_top_k(&self, query: &[f32], k: usize) -> Vec<SimilarityMatch> {
+        if !self.has_jl_sketch || self.block_count == 0 {
+            return Vec::new();
+        }
+
+        let (quantizer, query_qv) = match self.make_query_sketch(query) {
+            Some(v) => v,
+            None => return Vec::new(),
+        };
+
+        let mut all: Vec<SimilarityMatch> = if self.block_count > 100 {
+            (0..self.block_count)
+                .into_par_iter()
+                .filter_map(|block_idx| {
+                    let block_qv = self.get_block_sketch(block_idx)?;
+                    let score = quantizer.quantized_cosine_similarity(&query_qv, &block_qv);
+                    Some(SimilarityMatch { block_idx, score })
+                })
+                .collect()
+        } else {
+            (0..self.block_count)
+                .filter_map(|block_idx| {
+                    let block_qv = self.get_block_sketch(block_idx)?;
+                    let score = quantizer.quantized_cosine_similarity(&query_qv, &block_qv);
+                    Some(SimilarityMatch { block_idx, score })
+                })
+                .collect()
+        };
+
+        all.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        all.truncate(k);
+        all
+    }
+
+    pub fn search_similar_with_results(&self, query: &[f32], threshold: f32) -> Vec<(f32, Vec<String>)> {
+        let matches = self.search_similar(query, threshold);
+        if matches.is_empty() {
+            return Vec::new();
+        }
+
+        matches
+            .into_iter()
+            .filter_map(|m| {
+                match self.decompress_block(m.block_idx) {
+                    Ok(rows) => {
+                        let lines: Vec<String> = rows
+                            .into_iter()
+                            .map(|row| String::from_utf8_lossy(&row).into_owned())
+                            .collect();
+                        Some((m.score, lines))
+                    }
+                    Err(_) => None,
+                }
+            })
+            .collect()
     }
 
     pub fn get_row(&self, index: u64) -> Option<Vec<u8>> {

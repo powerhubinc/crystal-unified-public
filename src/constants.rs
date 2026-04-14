@@ -63,6 +63,8 @@ pub const FLAG_FAST_MODE: u64 = 32;
 
 pub const FLAG_STREAMING_MODE: u64 = 64;
 
+pub const FLAG_HAS_JL_SKETCH: u64 = 512;
+
 // ============================================================================
 // Transform Type IDs
 // ============================================================================
@@ -80,6 +82,8 @@ pub const TRANSFORM_NIBBLE_SPLIT: u8 = 4;
 pub const TRANSFORM_STRUCTURED: u8 = 5;
 
 pub const TRANSFORM_DNA_FASTA: u8 = 6;
+
+pub const TRANSFORM_DNA_REFERENCE: u8 = 7;
 
 // ============================================================================
 // Detection Constants
@@ -130,3 +134,21 @@ pub const TRIGRAM_BLOOM_SIZE_U64: usize = 1024;
 pub const TRIGRAM_BLOOM_SIZE_BYTES: usize = TRIGRAM_BLOOM_SIZE_U64 * 8;
 
 pub const TRIGRAM_BLOOM_SIZE_BITS: usize = TRIGRAM_BLOOM_SIZE_U64 * 64;
+
+// ============================================================================
+// JL Sketch / Vector Quantization Constants
+// ============================================================================
+
+pub const JL_SKETCH_QUANT_BITS: u8 = 4;
+
+pub const JL_SKETCH_DEFAULT_DIM: usize = 64;
+
+pub const JL_SKETCH_ENTRY_SIZE: usize = 4 + (64 * JL_SKETCH_QUANT_BITS as usize / 8);
+
+pub const HEADER_SKETCH_DIM_OFFSET: usize = 60;
+pub const HEADER_SKETCH_BITS_OFFSET: usize = 61;
+pub const HEADER_IDF_SIZE_OFFSET: usize = 62;
+
+pub fn jl_sketch_entry_size(dim: usize, bits: u8) -> usize {
+    4 + dim * bits as usize / 8
+}

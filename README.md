@@ -11,14 +11,14 @@
 ### Search Without Decompressing
 
 ```bash
-# Traditional workflow: decompress, grep, wait, clean up
-zstd -d huge_logs.zst && grep "error" huge_logs && rm huge_logs
+# Traditional: streaming decompress, but entire file passes through memory
+zstd -dc huge_logs.zst | grep "error"   # 709 MB decompressed through RAM
 
-# Crystal workflow: just search
-cuz search huge_logs.cuz "error"
+# Crystal: indexed search, decompress only matching blocks
+cuz search huge_logs.cuz "error"        # Jump directly to matches
 ```
 
-Crystal builds search indexes during compression. Find what you need in milliseconds, not minutes.
+Crystal builds search indexes during compression. Traditional tools must decompress the entire file through memory even when streaming. Crystal jumps directly to matching blocks.
 
 ### Compression That Understands Your Data
 
@@ -27,7 +27,7 @@ Crystal doesn't just compress bytes. It recognizes structure:
 | Data Type | What Crystal Sees | Result |
 |-----------|-------------------|--------|
 | Log files | Repeating templates with variable fields | **6-11% of original size** |
-| DNA sequences | 4-letter alphabet (ACGT) | **4:1 base compression** |
+| DNA sequences | 4-letter alphabet (ACGT) | **2-bit encoding + reference compression** |
 | Time series | Sequential numeric patterns | **Delta-encoded efficiency** |
 | Firmware | Binary with sparse changes | **Block-level random access** |
 
@@ -121,11 +121,25 @@ cuz search january-logs.cuz "OutOfMemoryError"
 
 ### Genomic Data
 
-Native 2-bit encoding for DNA. Process reference genomes and sequencing data.
+Reference-based compression with true lossless FASTA roundtrip.
 
 ```bash
+# Build reference index (one-time)
+cuz dna-index reference.fa reference.cdni
+
+# Compress against reference (1.7% ratio for same-species samples)
+cuz dna-compress sample.fa -r reference.cdni
+# 3.3 GB -> 58 MB (headers, line wrapping, N's, lowercase preserved)
+
+# Standalone 2-bit encoding (no reference needed)
+cuz compress sequences.fasta -t dna
+# Standard compression (4:1)
 cuz compress human_genome.fasta -t dna
-# 3.2 GB -> ~800 MB with full fidelity
+# 3.2 GB -> ~800 MB
+
+# Reference-based compression (extreme ratios)
+cuz dna-index hg38.fa hg38.cdni        # Build reference index (once)
+cuz dna-compress sample.fa -r hg38.cdni # 3.3 GB -> ~30 KB
 ```
 
 ### Firmware Updates
@@ -167,6 +181,9 @@ cuz compress sensor_readings.csv -t numeric
 | `delta <old> <new>` | Create binary patch |
 | `apply <base> <patch>` | Apply binary patch |
 | `firmware <file>` | Block-based compression |
+| `dna-index <ref>` | Build DNA reference index |
+| `dna-compress <file> -r <idx>` | Compress with reference |
+| `dna-decompress <file> -r <idx>` | Decompress with reference |
 
 ### Options
 
