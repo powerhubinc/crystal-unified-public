@@ -23,6 +23,7 @@ pub struct BurnerV10 {
     decompressed_sizes: Vec<u64>,
     block_blooms: Vec<BloomFilter>,
     trigram_blooms: Vec<TrigramBloom>,
+    jl_sketches: Vec<Vec<u8>>,
     row_count: u64,
     trailing_newline: bool,
     dictionary: Option<Vec<u8>>,
@@ -45,6 +46,7 @@ impl BurnerV10 {
             decompressed_sizes: Vec::new(),
             block_blooms: Vec::new(),
             trigram_blooms: Vec::new(),
+            jl_sketches: Vec::new(),
             row_count: 0,
             trailing_newline: true,
             dictionary: None,
@@ -164,9 +166,15 @@ impl BurnerV10 {
         } else {
             0
         };
+        let entry_size = jl_sketch_entry_size(self.options.sketch_dim, self.options.sketch_bits);
+        let sketch_size = if self.options.use_jl_sketch && !self.jl_sketches.is_empty() {
+            block_count * entry_size
+        } else {
+            0
+        };
         let data_size: usize = self.compressed_blocks.iter().map(|b| b.len()).sum();
 
-        let total_size = HEADER_SIZE + 8 + dict_size + index_size + bloom_size + trigram_size + data_size;
+        let total_size = HEADER_SIZE + 8 + dict_size + index_size + bloom_size + trigram_size + sketch_size + data_size;
         let mut output = Vec::with_capacity(total_size);
 
        
@@ -186,6 +194,9 @@ impl BurnerV10 {
         if self.options.fast_mode {
             flags |= FLAG_FAST_MODE;
         }
+        if self.options.use_jl_sketch && !self.jl_sketches.is_empty() {
+            flags |= FLAG_HAS_JL_SKETCH;
+        }
         output.write_u64::<LittleEndian>(flags).unwrap();
 
         output.write_i32::<LittleEndian>(self.options.compression_level).unwrap();
@@ -194,11 +205,15 @@ impl BurnerV10 {
         let orig_dict_size = self.dictionary.as_ref().map(|d| d.len()).unwrap_or(0);
         output.write_u64::<LittleEndian>(orig_dict_size as u64).unwrap();
 
+        if self.options.use_jl_sketch && !self.jl_sketches.is_empty() {
+            output.push(self.options.sketch_dim as u8);
+            output.push(self.options.sketch_bits);
+            output.extend_from_slice(&0u32.to_le_bytes()); // no IDF table
+        }
         while output.len() < HEADER_SIZE {
             output.push(0);
         }
 
-       
         if let Some(ref dict) = dict_compressed {
             output.extend_from_slice(dict);
         }
@@ -226,7 +241,12 @@ impl BurnerV10 {
             }
         }
 
-       
+        if self.options.use_jl_sketch {
+            for sketch_bytes in &self.jl_sketches {
+                output.extend_from_slice(sketch_bytes);
+            }
+        }
+
         for block in &self.compressed_blocks {
             output.extend_from_slice(block);
         }

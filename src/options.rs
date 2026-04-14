@@ -22,6 +22,9 @@ pub struct CompressionOptions {
     pub transform_type: u8,
     pub auto_level: bool,
     pub fast_mode: bool,
+    pub use_jl_sketch: bool,
+    pub sketch_dim: usize,
+    pub sketch_bits: u8,
 }
 
 impl Default for CompressionOptions {
@@ -38,6 +41,9 @@ impl Default for CompressionOptions {
             transform_type: TRANSFORM_NONE,
             auto_level: false,
             fast_mode: true,
+            use_jl_sketch: false,
+            sketch_dim: 64,
+            sketch_bits: 4,
         }
     }
 }
@@ -72,4 +78,7 @@ impl CompressionOptions {
     pub fn with_transform(mut self, transform_type: u8) -> Self { self.transform_type = transform_type; self.auto_transform = false; self }
     pub fn with_auto_level(mut self, enabled: bool) -> Self { self.auto_level = enabled; self }
     pub fn with_fast_mode(mut self, enabled: bool) -> Self { self.fast_mode = enabled; self }
+    pub fn with_jl_sketch(mut self, enabled: bool) -> Self { self.use_jl_sketch = enabled; self }
+    pub fn with_sketch_dim(mut self, dim: usize) -> Self { self.sketch_dim = dim; self }
+    pub fn with_sketch_bits(mut self, bits: u8) -> Self { self.sketch_bits = bits; self }
 }

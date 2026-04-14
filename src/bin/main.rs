@@ -54,12 +54,17 @@ fn main() {
         eprintln!("  dna-compress  <input.fa> -r <ref.cdni> [-o output]");
         eprintln!("  dna-decompress <input.cdnr> -r <ref.cdni> [-o output]");
         eprintln!();
+        eprintln!();
+        eprintln!("Similarity search:");
+        eprintln!("  similar       <file.cuz>  (check if archive has vector index)");
+        eprintln!();
         eprintln!("Transforms: none, dna, numeric, binary, nibble, struct");
         std::process::exit(1);
     }
 
     match args[1].as_str() {
         "c" | "compress" => compress_cmd(&args[2..]),
+        "similar" | "sim" => similar_cmd(&args[2..]),
         "d" | "decompress" => decompress_cmd(&args[2..]),
         "a" | "analyze" => analyze_cmd(&args[2..]),
         "auto" => auto_compress_cmd(&args[2..]),
@@ -98,7 +103,6 @@ fn compress_cmd(args: &[String]) {
     let mut block_size: Option<u64> = None;
     let mut streaming = false;
     let mut fast_mode = false;
-
     let mut i = 1;
     while i < args.len() {
         if args[i] == "-l" && i + 1 < args.len() {
@@ -157,7 +161,6 @@ fn compress_cmd(args: &[String]) {
     if let Some(b) = block_size {
         options = options.with_block_size(b);
     }
-
     let start = Instant::now();
     let compressed = if streaming && transform.is_none() {
        
@@ -458,6 +461,46 @@ fn search_cmd(args: &[String]) {
             println!("... {} more", results.len() - max_results);
         }
     }
+}
+
+fn similar_cmd(args: &[String]) {
+    if args.is_empty() {
+        eprintln!("Usage: cuz similar <file.cuz>");
+        eprintln!();
+        eprintln!("Similarity search requires a vector index embedded via the library API.");
+        eprintln!("Use embed_archive() to attach embeddings, then search_similar() with");
+        eprintln!("a query embedding vector.");
+        std::process::exit(1);
+    }
+
+    let input_path = &args[0];
+
+    let data = match fs::read(input_path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let reader = match CrystalReaderV10::new(&data) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if !reader.has_jl_sketch() {
+        eprintln!("Archive has no vector index.");
+        eprintln!("Use embed_archive() in the library API to attach embeddings.");
+        std::process::exit(1);
+    }
+
+    println!("Archive has vector index: dim={}, bits={}, blocks={}",
+        reader.sketch_dim(), reader.sketch_bits(), reader.block_count());
+    println!("Use the library API (search_similar / search_similar_top_k) with");
+    println!("a query embedding vector to search.");
 }
 
 fn highlight_term(line: &str, term: &str) -> String {

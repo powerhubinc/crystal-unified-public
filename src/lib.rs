@@ -18,6 +18,8 @@ pub mod block;
 pub mod dictionary;
 pub mod compress;
 pub mod decompress;
+pub mod sketch;
+pub mod embed;
 
 mod api;
 
@@ -39,4 +41,14 @@ pub use constants::{
     DETECT_SAMPLE_SIZE, DETECTION_SAMPLE_SIZE,
     SMALL_FILE_THRESHOLD, TINY_FILE_THRESHOLD, MIN_COMPRESSION_BENEFIT,
     BLOCK_RAW_MAGIC, BLOCK_RAW_VERSION, BLOCK_RAW_HEADER_SIZE, DEFAULT_BINARY_BLOCK_SIZE,
+    FLAG_HAS_JL_SKETCH, JL_SKETCH_ENTRY_SIZE, JL_SKETCH_QUANT_BITS,
 };
+
+pub use sketch::{
+    JLProjection, JLSketch, VectorQuantizer, QuantizedVector,
+    SimilarityIndex, SimilarityMatch,
+    jl_sketch_from_embedding,
+    jl_cosine_similarity, quantize_vector, dequantize_vector,
+    build_similarity_index, query_similar_blocks,
+};
+pub use embed::embed_archive;

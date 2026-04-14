@@ -35,3 +35,7 @@ opt-level = 3
 [[bin]]
 name = "cuz"
 path = "src/bin/main.rs"
+
+[[bench]]
+name = "vector_search_bench"
+harness = false
